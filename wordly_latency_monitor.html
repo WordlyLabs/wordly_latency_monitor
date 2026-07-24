@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wordly ASR Latency Monitor</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --panel2: #171c27;
+    --border: #262d3a;
+    --text: #d7dbe3;
+    --text-dim: #7d8598;
+    --blue: #3d9bff;
+    --green: #35c17a;
+    --amber: #e8a33d;
+    --red: #ef5464;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans);
+    margin: 0; padding: 20px; min-height: 100vh;
+  }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; margin: 0 0 2px 0; color: #fff; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 100px; }
+  .field label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+  input, select {
+    background: #0e1219; border: 1px solid var(--border); color: var(--text);
+    padding: 7px 9px; border-radius: 5px; font-size: 13px; font-family: var(--mono);
+  }
+  input:focus, select:focus { outline: none; border-color: var(--blue); }
+  button {
+    background: var(--blue); color: #fff; border: none; padding: 8px 16px;
+    border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.secondary { background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+  button.small { padding: 5px 10px; font-size: 11px; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;
+    padding: 4px 9px; border-radius: 20px; font-family: var(--mono);
+  }
+  .status-badge.disconnected { background: #2a1418; color: var(--red); }
+  .status-badge.connecting { background: #2a250f; color: var(--amber); }
+  .status-badge.connected { background: #0f2a1c; color: var(--green); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display:inline-block; }
+  .caveat {
+    font-size: 11px; color: var(--amber); background: #1c1608; border: 1px solid #3d3115;
+    padding: 8px 10px; border-radius: 5px; margin-top: 8px; line-height: 1.5;
+  }
+  .caveat-details { margin-top: 10px; }
+  .caveat-summary {
+    font-size: 11px; color: var(--amber); cursor: pointer; list-style: none;
+    padding: 4px 0; user-select: none;
+  }
+  .caveat-summary::-webkit-details-marker { display: none; }
+  .caveat-summary:hover { text-decoration: underline; }
+  .comparison-summary {
+    font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer;
+    list-style: none; padding: 2px 0; user-select: none; font-family: var(--mono);
+  }
+  .comparison-summary::-webkit-details-marker { display: none; }
+  .comparison-summary:hover { text-decoration: underline; }
+  .comparison-summary b { color: var(--text); }
+  .comparison-summary b.severe { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  thead th {
+    text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-dim); padding: 7px 8px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--panel2); font-family: var(--sans);
+  }
+  tbody td { padding: 6px 8px; border-bottom: 1px solid #1a1f29; vertical-align: top; }
+  tbody tr:hover { background: #151a24; cursor: pointer; }
+  tbody tr.selected-row { outline: 2px solid var(--blue); outline-offset: -2px; }
+  tbody tr.final-ooo { background: #2a1218; }
+  tbody tr.final-ooo:hover { background: #35161d; }
+  tbody tr.no-timestamp td.latency-cell { color: var(--text-dim); font-style: italic; }
+  .badge-flag {
+    display: inline-block; color: #fff; font-size: 9px; font-weight: 700;
+    padding: 2px 6px; border-radius: 3px; letter-spacing: 0.03em;
+  }
+  .badge-flag.severe { background: var(--red); }
+  .text-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .latency-num { font-weight: 700; }
+  .latency-num.hi { color: var(--red); }
+  .latency-num.mid { color: var(--amber); }
+  .latency-num.lo { color: var(--green); }
+  .table-wrap { max-height: 44vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 980px) { .panes { grid-template-columns: 1fr; } }
+  .pane { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .pane-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
+  .pane-title { font-size: 13px; font-weight: 700; color: #fff; }
+  .pane-stats {
+    display: flex; gap: 12px; font-size: 11px; color: var(--text-dim); font-family: var(--mono);
+    margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .pane-stats b { color: var(--text); }
+  .pane-stats b.severe { color: var(--red); }
+  .severe { color: var(--red) !important; }
+  .pane-toolbar { display: flex; gap: 6px; margin-top: 8px; }
+
+  details { margin-top: 14px; }
+  summary { cursor: pointer; font-size: 12px; color: var(--text-dim); padding: 4px 0; }
+  pre.raw {
+    background: #0e1219; border: 1px solid var(--border); border-radius: 5px; padding: 10px;
+    font-size: 11px; overflow-x: auto; max-height: 200px; color: #9fb0c9;
+  }
+  .discovered-fields { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .field-chip {
+    background: #0e1219; border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px;
+    font-size: 11px; font-family: var(--mono); color: var(--text-dim);
+  }
+  .field-chip.confirmed { color: var(--green); border-color: #1e4a30; }
+  .raw-log-table { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<h1>WORDLY ASR LATENCY MONITOR</h1>
+<div class="subtitle">Standalone diagnostic tool — connects directly to Wordly's /attend endpoint, two languages at once. Not part of Gateway.</div>
+
+<div class="panel">
+  <div class="row">
+    <div class="field">
+      <label>Environment</label>
+      <select id="envSelect">
+        <option value="prod">Prod</option>
+        <option value="dev">Dev</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Session ID</label>
+      <input id="sessionId" placeholder="ABCD-1234" style="width:110px">
+    </div>
+    <div class="field">
+      <label>Passcode</label>
+      <input id="passcode" placeholder="optional" style="width:100px">
+    </div>
+    <div class="field">
+      <label>Latency warn / critical (sec)</label>
+      <div style="display:flex; gap:4px;">
+        <input id="warnThresh" value="3.0" style="width:55px">
+        <input id="critThresh" value="6.0" style="width:55px">
+      </div>
+    </div>
+    <div class="field">
+      <label>Cross-language gap flag (sec)</label>
+      <input id="gapThresh" value="1.0" style="width:60px">
+    </div>
+    <button id="connectBothBtn">Connect Both</button>
+    <button id="disconnectBothBtn" class="secondary">Disconnect Both</button>
+  </div>
+  <div class="stats-bar" style="display:flex; gap:20px; font-size:12px; color:var(--text-dim); font-family:var(--mono); margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+    <span>Matched utterances: <b id="statMatched" style="color:var(--text)">0</b></span>
+    <span>Large gaps flagged: <b id="statGaps" class="severe">0</b></span>
+  </div>
+  <details class="caveat-details">
+    <summary class="caveat-summary">⚠ Reminder: timing is based on local machine NTP vs. Wordly server timestamps — click for full details</summary>
+    <div class="caveat">
+      Latency = local computer clock time minus Wordly's reported endTime, in seconds — your laptop's NTP-synced system clock, <b>not</b> a hardware PTP measurement. Each pane shows only <b>finalized</b> utterances (isFinal=true), newest first. A red <b>OUT OF ORDER</b> badge means a later utterance finalized before an earlier one did. The comparison table below matches utterances by <code>index</code> across both panes and flags anything beyond your gap threshold — <b>this assumes the same index refers to the same underlying utterance in both languages, which is not yet confirmed</b>; if the table stays empty while both panes are populating normally, that assumption was wrong and index doesn't correlate across languages.
+    </div>
+  </details>
+</div>
+
+<div class="panel">
+  <details class="comparison-details">
+    <summary class="comparison-summary">Cross-language comparison — matched: <b id="statMatchedSummary">0</b>, large gaps: <b id="statGapsSummary" class="severe">0</b> — click to collapse/expand</summary>
+    <div class="table-wrap" style="max-height:30vh; margin-top:10px;">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:50px">Idx</th>
+            <th style="width:100px">Pane A latency</th>
+            <th style="width:100px">Pane B latency</th>
+            <th style="width:90px">Gap (s)</th>
+            <th style="width:130px">Flag</th>
+          </tr>
+        </thead>
+        <tbody id="comparisonBody"></tbody>
+      </table>
+    </div>
+  </details>
+</div>
+
+<div class="panes" id="panesContainer"></div>
+
+<script>
+const FALLBACK_LANGS = [
+  ["en","English (US)"],["es","Spanish (Latin America)"],["fr","French"],["fr-CA","French (Canadian)"],
+  ["de","German"],["ja","Japanese"],["ko","Korean"],["zh-CN","Chinese (Simplified)"],
+  ["pt-BR","Portuguese (Brazil)"],["ar","Arabic"],["it","Italian"],["ru","Russian"],["hi","Hindi"]
+];
+let LANGS = FALLBACK_LANGS;
+fetch('https://assets.wordly.ai/language-config/languages.json')
+  .then(r => r.json())
+  .then(data => {
+    if (data.languages && data.languages.length) {
+      LANGS = data.languages.map(l => [l.wordlyCode, l.englishName]);
+      document.querySelectorAll('.pane-lang').forEach(sel => {
+        const current = sel.value;
+        populateLangSelect(sel, current);
+      });
+    }
+  })
+  .catch(() => { /* expected — fallback list already in place */ });
+
+function populateLangSelect(sel, selected) {
+  sel.innerHTML = LANGS.map(([code,name]) => `<option value="${code}" ${code===selected?'selected':''}>${name} (${code})</option>`).join('');
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+function fmtTime(ms) {
+  return new Date(ms).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + String(ms % 1000).padStart(3,'0');
+}
+function latencyClass(sec, warn, crit) {
+  if (sec >= crit) return 'hi';
+  if (sec >= warn) return 'mid';
+  return 'lo';
+}
+function getIsFinal(msg) {
+  for (const f of ['isFinal','final']) if (typeof msg[f] === 'boolean') return { value: msg[f], field: f };
+  return { value: null, field: null };
+}
+
+const CONFIRMED_FIELDS = new Set(['startTime','endTime','index','speakerTag']);
+
+function createPane(paneId, defaultLang, title) {
+  const container = document.getElementById('panesContainer');
+  const el = document.createElement('div');
+  el.className = 'pane';
+  el.id = `pane-${paneId}`;
+  el.innerHTML = `
+    <div class="pane-header">
+      <span class="pane-title">${title}</span>
+      <select class="pane-lang" style="width:170px"></select>
+      <span class="pane-status status-badge disconnected"><span class="dot"></span> Disconnected</span>
+    </div>
+    <div class="pane-stats">
+      <span>Finalized: <b class="stat-count">0</b></span>
+      <span>Avg latency: <b class="stat-avg">—</b></span>
+      <span>Max latency: <b class="stat-max">—</b></span>
+      <span>Out of order: <b class="stat-ooo severe">0</b></span>
+      <span>No timestamp: <b class="stat-nots">0</b></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:40px">Idx</th>
+          <th style="width:80px">Time</th>
+          <th>Text</th>
+          <th style="width:80px">Latency</th>
+          <th style="width:80px">1st→Final</th>
+          <th style="width:110px">Flags</th>
+        </tr></thead>
+        <tbody class="pane-transcript"></tbody>
+      </table>
+    </div>
+    <div class="pane-toolbar">
+      <button class="small secondary pane-export-csv">Export CSV</button>
+      <button class="small secondary pane-export-json">Export JSON</button>
+      <button class="small secondary pane-clear">Clear</button>
+    </div>
+    <details>
+      <summary>All raw revisions (every message, unfiltered — "capture all")</summary>
+      <div class="raw-log-table">
+        <table>
+          <thead><tr><th style="width:80px">Time</th><th style="width:40px">Idx</th><th style="width:50px">Final?</th><th>Text</th><th style="width:70px">Latency</th></tr></thead>
+          <tbody class="pane-rawlog"></tbody>
+        </table>
+      </div>
+    </details>
+    <details>
+      <summary>Raw / debug — click any row above to inspect its exact message</summary>
+      <div class="discovered-fields pane-fields"></div>
+      <div class="pane-rawlabel" style="font-size:11px; color:var(--text-dim); margin-top:6px;">No row selected yet — click a row in either table above.</div>
+      <pre class="raw pane-rawlatest">No messages yet.</pre>
+    </details>
+  `;
+  container.appendChild(el);
+
+  const langSelect = el.querySelector('.pane-lang');
+  populateLangSelect(langSelect, defaultLang);
+  const statusBadge = el.querySelector('.pane-status');
+  const transcriptBody = el.querySelector('.pane-transcript');
+  const rawLogBody = el.querySelector('.pane-rawlog');
+  const fieldsEl = el.querySelector('.pane-fields');
+  const rawLatestEl = el.querySelector('.pane-rawlatest');
+  const rawLabelEl = el.querySelector('.pane-rawlabel');
+  const statCount = el.querySelector('.stat-count');
+  const statAvg = el.querySelector('.stat-avg');
+  const statMax = el.querySelector('.stat-max');
+  const statOOO = el.querySelector('.stat-ooo');
+  const statNoTs = el.querySelector('.stat-nots');
+
+  let selectedRowEl = null;
+  function showRaw(msg, label, rowEl) {
+    rawLatestEl.textContent = JSON.stringify(msg, null, 2);
+    rawLabelEl.textContent = label;
+    if (selectedRowEl) selectedRowEl.classList.remove('selected-row');
+    if (rowEl) { rowEl.classList.add('selected-row'); selectedRowEl = rowEl; }
+  }
+
+  const state = {
+    ws: null, utterances: new Map(), highestFinalizedIndex: null,
+    finalOOOCount: 0, finalLatencies: [], noTsCount: 0, allRevisions: [],
+    knownFields: new Set(), firstSeenByIndex: new Map(), onFinalizeCallback: null
+  };
+
+  function setStatus(s) {
+    statusBadge.className = `pane-status status-badge ${s}`;
+    statusBadge.innerHTML = `<span class="dot"></span> ${s.charAt(0).toUpperCase() + s.slice(1)}`;
+  }
+
+  function updateStats() {
+    statCount.textContent = state.utterances.size;
+    statOOO.textContent = state.finalOOOCount;
+    statNoTs.textContent = state.noTsCount;
+    if (state.finalLatencies.length) {
+      const avg = state.finalLatencies.reduce((a,b)=>a+b,0) / state.finalLatencies.length;
+      const max = Math.max(...state.finalLatencies);
+      statAvg.textContent = avg.toFixed(3) + 's';
+      statMax.textContent = max.toFixed(3) + 's';
+    }
+  }
+
+  function updateFields() {
+    fieldsEl.innerHTML = [...state.knownFields].sort().map(f =>
+      `<span class="field-chip ${CONFIRMED_FIELDS.has(f) ? 'confirmed' : ''}">${f}</span>`
+    ).join('');
+  }
+
+  function insertInOrder(tr, idx) {
+    const rows = [...transcriptBody.children];
+    const before = rows.find(r => parseInt(r.dataset.index, 10) < idx);
+    if (before) transcriptBody.insertBefore(tr, before);
+    else transcriptBody.appendChild(tr);
+  }
+
+  function renderRow(u) {
+    const warn = parseFloat(document.getElementById('warnThresh').value) || 3.0;
+    const crit = parseFloat(document.getElementById('critThresh').value) || 6.0;
+    u.trEl.className = '';
+    u.trEl.dataset.index = u.index;
+    if (u.finalOOO) u.trEl.classList.add('final-ooo');
+    if (!u.hasTs) u.trEl.classList.add('no-timestamp');
+    const flagsHtml = u.finalOOO ? '<span class="badge-flag severe">OUT OF ORDER</span>' : '';
+    u.trEl.innerHTML = `
+      <td>${u.index}</td>
+      <td>${fmtTime(u.finalizedMs)}</td>
+      <td class="text-cell" title="${escapeHtml(u.text)}">${escapeHtml(u.text)}</td>
+      <td>${u.hasTs ? `<span class="latency-num ${latencyClass(u.latencySec, warn, crit)}">${u.latencySec.toFixed(3)}</span>` : 'n/a'}</td>
+      <td>${u.revisionSpanSec !== null ? u.revisionSpanSec.toFixed(3) : '—'}</td>
+      <td>${flagsHtml}</td>
+    `;
+  }
+
+  function addRawLogRow(msg, idx, isFinalInfo, latencySec) {
+    const tr = document.createElement('tr');
+    const capturedAt = Date.now();
+    tr.innerHTML = `
+      <td>${fmtTime(capturedAt)}</td>
+      <td>${idx !== null ? idx : '—'}</td>
+      <td>${isFinalInfo.value === null ? '?' : (isFinalInfo.value ? 'yes' : 'no')}</td>
+      <td class="text-cell" title="${escapeHtml(msg.translatedText || msg.text || '')}">${escapeHtml(msg.translatedText || msg.text || '(no text field)')}</td>
+      <td>${latencySec !== null ? latencySec.toFixed(3) : '—'}</td>
+    `;
+    tr.addEventListener('click', () => showRaw(msg, `Revision — index ${idx !== null ? idx : '—'}, isFinal=${isFinalInfo.value === null ? '?' : isFinalInfo.value}, received ${fmtTime(capturedAt)}`, tr));
+    rawLogBody.insertBefore(tr, rawLogBody.firstChild);
+  }
+
+  function handlePhrase(msg) {
+    Object.keys(msg).forEach(k => state.knownFields.add(k));
+    updateFields();
+    rawLatestEl.textContent = JSON.stringify(msg, null, 2);
+
+    const now = Date.now();
+    const endTime = msg.endTime;
+    const startTime = msg.startTime;
+    const hasTs = typeof endTime === 'number';
+    const latencySec = hasTs ? (now - endTime) / 1000 : null;
+    if (!hasTs) state.noTsCount++;
+
+    const idx = (typeof msg.index === 'number') ? msg.index : null;
+    const isFinalInfo = getIsFinal(msg);
+    const text = msg.translatedText || msg.text || '(no text field on this message)';
+
+    if (idx !== null && !state.firstSeenByIndex.has(idx)) {
+      state.firstSeenByIndex.set(idx, now);
+    }
+
+    state.allRevisions.push({
+      receivedLocalTime: new Date(now).toISOString(),
+      index: idx, isFinal: isFinalInfo.value, text,
+      latencySec: hasTs ? latencySec.toFixed(3) : null,
+      hasTimestamp: hasTs, rawMessage: msg
+    });
+    addRawLogRow(msg, idx, isFinalInfo, latencySec);
+
+    if (idx === null || isFinalInfo.value !== true) { updateStats(); return; }
+
+    const firstSeenMs = state.firstSeenByIndex.get(idx) ?? now;
+    const revisionSpanSec = (now - firstSeenMs) / 1000;
+
+    let u = state.utterances.get(idx);
+    if (!u) {
+      u = { index: idx, trEl: document.createElement('tr'), finalOOO: false, finalizedMs: now, text, hasTs, latencySec, revisionSpanSec, rawMsg: msg };
+      state.utterances.set(idx, u);
+      insertInOrder(u.trEl, idx);
+      u.trEl.addEventListener('click', () => showRaw(u.rawMsg, `Finalized utterance #${u.index} — finalized at ${fmtTime(u.finalizedMs)}`, u.trEl));
+    } else {
+      u.finalizedMs = now; u.text = text; u.hasTs = hasTs; u.latencySec = latencySec; u.revisionSpanSec = revisionSpanSec; u.rawMsg = msg;
+    }
+
+    if (state.highestFinalizedIndex !== null && idx < state.highestFinalizedIndex) {
+      u.finalOOO = true; state.finalOOOCount++;
+    } else if (state.highestFinalizedIndex === null || idx > state.highestFinalizedIndex) {
+      state.highestFinalizedIndex = idx;
+    }
+    if (hasTs) state.finalLatencies.push(latencySec);
+
+    if (state.onFinalizeCallback) {
+      state.onFinalizeCallback(idx, hasTs ? latencySec : null);
+    }
+
+    renderRow(u);
+    updateStats();
+  }
+
+  function connect(sessionId, passcode, env) {
+    const lang = langSelect.value;
+    const host = env === 'dev' ? 'dev-endpoint.wordly.ai' : 'endpoint.wordly.ai';
+    const url = `wss://${host}/attend`;
+    setStatus('connecting');
+
+    state.ws = new WebSocket(url);
+    state.ws.onopen = () => {
+      const msg = {
+        type: 'connect', presentationCode: sessionId, languageCode: lang,
+        name: `Latency Monitor (${title})`, identifier: 'diag-' + Math.random().toString(36).slice(2),
+        connectionCode: '9005'
+      };
+      if (passcode) msg.accessKey = passcode;
+      state.ws.send(JSON.stringify(msg));
+    };
+    state.ws.onmessage = (e) => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch(err) { return; }
+      if (msg.type === 'status') {
+        if (msg.success) setStatus('connected');
+        else { setStatus('disconnected'); alert(`[${title}] Wordly rejected connection — code ${msg.code}: ${msg.message || 'unknown error'}`); }
+        Object.keys(msg).forEach(k => state.knownFields.add(k));
+        updateFields();
+        rawLatestEl.textContent = JSON.stringify(msg, null, 2);
+      } else if (msg.type === 'phrase') {
+        handlePhrase(msg);
+      } else if (msg.type === 'end') {
+        setStatus('disconnected');
+      }
+    };
+    state.ws.onclose = () => setStatus('disconnected');
+    state.ws.onerror = () => setStatus('disconnected');
+  }
+
+  function disconnect() {
+    if (state.ws) { try { state.ws.send(JSON.stringify({type:'disconnect'})); } catch(e){} state.ws.close(); }
+    setStatus('disconnected');
+  }
+
+  el.querySelector('.pane-export-csv').addEventListener('click', () => {
+    if (!state.allRevisions.length) { alert('Nothing to export yet.'); return; }
+    const headers = ['receivedLocalTime','index','isFinal','text','latencySec','hasTimestamp'];
+    const rows = [headers.join(',')];
+    state.allRevisions.forEach(r => {
+      rows.push(headers.map(h => `"${String(r[h] ?? '').replace(/"/g,'""')}"`).join(','));
+    });
+    downloadFile(rows.join('\n'), `wordly-latency-${title}-${Date.now()}.csv`, 'text/csv');
+  });
+  el.querySelector('.pane-export-json').addEventListener('click', () => {
+    if (!state.allRevisions.length) { alert('Nothing to export yet.'); return; }
+    downloadFile(JSON.stringify(state.allRevisions, null, 2), `wordly-latency-${title}-raw-${Date.now()}.json`, 'application/json');
+  });
+  el.querySelector('.pane-clear').addEventListener('click', () => {
+    transcriptBody.innerHTML = ''; rawLogBody.innerHTML = '';
+    state.utterances.clear(); state.allRevisions = []; state.finalLatencies = [];
+    state.highestFinalizedIndex = null; state.finalOOOCount = 0; state.noTsCount = 0;
+    state.firstSeenByIndex.clear();
+    updateStats();
+  });
+
+  return {
+    connect, disconnect,
+    onFinalize(cb) { state.onFinalizeCallback = cb; }
+  };
+}
+
+function downloadFile(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+const paneA = createPane('a', 'en', 'Pane A — Source baseline');
+const paneB = createPane('b', 'fr', 'Pane B — Comparison (adjustable)');
+
+// --- Cross-language comparison — matches finalized utterances by index ---
+// ASSUMPTION (unconfirmed): the same `index` refers to the same underlying
+// utterance across both language connections. If that turns out false,
+// this table will simply stay empty — it degrades harmlessly rather than
+// showing wrong data.
+const comparisonBody = document.getElementById('comparisonBody');
+const comparisonData = new Map(); // index -> { a: latencySec|null, b: latencySec|null, trEl }
+let matchedCount = 0;
+let gapFlagCount = 0;
+
+function insertComparisonRow(tr, idx) {
+  const rows = [...comparisonBody.children];
+  const before = rows.find(r => parseInt(r.dataset.index, 10) < idx);
+  if (before) comparisonBody.insertBefore(tr, before);
+  else comparisonBody.appendChild(tr);
+}
+
+function renderComparisonRow(entry, idx) {
+  const gapThresh = parseFloat(document.getElementById('gapThresh').value) || 1.0;
+  const hasBoth = entry.a !== null && entry.a !== undefined && entry.b !== null && entry.b !== undefined;
+  let gap = null, flagged = false;
+  if (hasBoth) {
+    gap = Math.abs(entry.a - entry.b);
+    flagged = gap >= gapThresh;
+  }
+  entry.trEl.className = flagged ? 'final-ooo' : '';
+  entry.trEl.dataset.index = idx;
+  entry.trEl.innerHTML = `
+    <td>${idx}</td>
+    <td>${entry.a !== null && entry.a !== undefined ? entry.a.toFixed(3) : '—'}</td>
+    <td>${entry.b !== null && entry.b !== undefined ? entry.b.toFixed(3) : '—'}</td>
+    <td>${gap !== null ? gap.toFixed(3) : '—'}</td>
+    <td>${flagged ? '<span class="badge-flag severe">LARGE GAP</span>' : ''}</td>
+  `;
+}
+
+function updateComparisonStats() {
+  document.getElementById('statMatched').textContent = matchedCount;
+  document.getElementById('statGaps').textContent = gapFlagCount;
+  document.getElementById('statMatchedSummary').textContent = matchedCount;
+  document.getElementById('statGapsSummary').textContent = gapFlagCount;
+}
+
+function handleFinalize(pane, idx, latencySec) {
+  if (idx === null) return;
+  let entry = comparisonData.get(idx);
+  const wasComplete = entry && entry.a != null && entry.b != null;
+  if (!entry) {
+    entry = { a: null, b: null, trEl: document.createElement('tr') };
+    comparisonData.set(idx, entry);
+    insertComparisonRow(entry.trEl, idx);
+  }
+  entry[pane] = latencySec;
+  const isCompleteNow = entry.a != null && entry.b != null;
+  if (isCompleteNow && !wasComplete) {
+    matchedCount++;
+    const gapThresh = parseFloat(document.getElementById('gapThresh').value) || 1.0;
+    if (Math.abs(entry.a - entry.b) >= gapThresh) gapFlagCount++;
+  }
+  renderComparisonRow(entry, idx);
+  updateComparisonStats();
+}
+
+paneA.onFinalize((idx, latencySec) => handleFinalize('a', idx, latencySec));
+paneB.onFinalize((idx, latencySec) => handleFinalize('b', idx, latencySec));
+
+document.getElementById('connectBothBtn').addEventListener('click', () => {
+  const sessionId = document.getElementById('sessionId').value.trim();
+  if (!sessionId) { alert('Session ID required.'); return; }
+  const passcode = document.getElementById('passcode').value.trim();
+  const env = document.getElementById('envSelect').value;
+  paneA.connect(sessionId, passcode, env);
+  paneB.connect(sessionId, passcode, env);
+});
+document.getElementById('disconnectBothBtn').addEventListener('click', () => {
+  paneA.disconnect(); paneB.disconnect();
+});
+</script>
+</body>
+</html>
